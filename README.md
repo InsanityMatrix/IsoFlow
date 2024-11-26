@@ -48,3 +48,14 @@ output {
         }
 }
 ```
+
+## Data Preprocessing
+SRC and DST IP's are classified as either internal or external. Additionally protocols (Numbered by IANA Standard) are onehot encoded. Ports are 'One Hot Encoded' into classifications for better analysis via the model.
+
+TBD: Time of day,
+## Model Performance
+Below is the SHAP analysis of the model, and how much certain features may contribute to classification of anomalies. The model seems to namely focus on bytes and packets, then values registered ports more than well known ports. Before further analysis, more data collection would be preferable (as only working with 100 anomalies in current testing data).
+
+
+![Trained on 2 days of training data](model_perf_11_25_2024_2_days.png)
+

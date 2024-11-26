@@ -11,11 +11,13 @@ import joblib
 import shap
 
 
+CONTAMINATION = 0.5 / 100 # To be set as PERCENT_HOSTILE env variable in future
+
 # Flask Webserver
 app = Flask(__name__)
-model = IsolationForest(n_estimators=150 , contamination=0.02, random_state=3)
+model = IsolationForest(n_estimators=150 , contamination=CONTAMINATION, random_state=3)
 scaler = StandardScaler()
-
+protocol_columns = None
 # Data Directory to load from
 DEBUG_MODEL = True
 directory = "captures/"
@@ -69,7 +71,8 @@ Changes values of model & scaler globals
 """
 def train_model():
     original_data = pd.DataFrame()
-
+    
+    # Process Data
     for file_path in file_paths:
         print(f"Processing File: {file_path}")
         try:
@@ -83,7 +86,8 @@ def train_model():
             original_data = pd.concat([original_data, fdata], ignore_index=True)
         except Exception as e:
             print(f"Error processing file {file_path}: {e}")
-
+    
+    # Vet for required columns to perform analysis
     required_columns = ['protocol', 'l4_src_port', 'l4_dst_port', 'in_bytes', 'in_pkts', 'ipv4_src_addr', 'ipv4_dst_addr']
     missing_columns = [col for col in required_columns if col not in original_data.columns]
     if missing_columns:
@@ -98,7 +102,7 @@ def train_model():
         exit()
     
     data = preprocess_data(original_data)
-
+    protocol_columns = data.columns # Keep track for ingestion later
     # Prepare Features for Model 
     
     
@@ -139,10 +143,10 @@ def train_model():
         print("Analyzing Model")
         # Create a SHAP explainer
         explainer = shap.KernelExplainer(model.decision_function, X_train_scaled[:100])  # Use a subset for faster computation
-        shap_values = explainer.shap_values(X_train_scaled[:1000])
+        shap_values = explainer.shap_values(X_train_scaled[:2000])
 
         # Summary plot for feature importance
-        shap.summary_plot(shap_values, X_train[:1000], feature_names=features)
+        shap.summary_plot(shap_values, X_train[:2000], feature_names=features)
 
 """
 App Webhook
@@ -156,22 +160,24 @@ def process_flow():
     flow_df = pd.json_normalize(flow['netflow'])
 
     # Ensure the required columns exist in the incoming data
+    required_columns = ['protocol', 'l4_src_port', 'l4_dst_port', 'in_bytes', 'in_pkts', 'ipv4_src_addr', 'ipv4_dst_addr']
     missing_columns = [col for col in required_columns if col not in flow_df.columns]
     if missing_columns:
         return jsonify({"error": f"Missing required columns: {missing_columns}"}), 400
 
     # Classify IPs
-    flow_df['src_internal'] = flow_df['ipv4_src_addr'].apply(classify_ip)
-    flow_df['dst_internal'] = flow_df['ipv4_dst_addr'].apply(classify_ip)
-    features = ['protocol', 'l4_src_port', 'l4_dst_port', 'in_bytes', 'in_pkts', 'src_internal', 'dst_internal']
-    X = flow_df[features]
+    mdata = preprocess_data(flow_df)
+
+    mdata = mdata.reindex(columns=protocol_columns, fill_value=0)
+    X = mdata
 
     # Standardize the features
     X_scaled = scaler.transform(X) # Scaler is same scaler as used in the model
 
     # Predict anomaly
     flow_df['anomaly'] = model.predict(X_scaled)
-    #TODO: Implement action to notify regenerative network or enforcer (on anomaly)
+    
+    # TODO: Implement action to notify regenerative network or enforcer (on anomaly)
 
     # Return the prediction result
     result = flow_df[['anomaly']].iloc[0].to_dict()  # Return only the anomaly status of the first row
