@@ -41,7 +41,7 @@ input {
 output {
         if [netflow] {
                 http {
-                        url => "http://{server_ip}:5000/process_flow"
+                        url => "http://{server_ip}:5300/process_flow"
                         http_method => "post"
                         format => "json"
                 }

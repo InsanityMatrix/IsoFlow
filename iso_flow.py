@@ -1,6 +1,7 @@
 import pandas as pd
 from flask import Flask, request, jsonify
 import numpy as np
+import requests
 from sklearn.ensemble import IsolationForest
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -9,7 +10,9 @@ import os
 from glob import glob
 import joblib
 import shap
+from dotenv import load_dotenv
 
+load_dotenv()
 
 CONTAMINATION = 0.5 / 100 # To be set as PERCENT_HOSTILE env variable in future
 
@@ -19,17 +22,17 @@ model = IsolationForest(n_estimators=150 , contamination=CONTAMINATION, random_s
 scaler = StandardScaler()
 protocol_columns = None
 # Data Directory to load from
-DEBUG_MODEL = True
+DEBUG_MODEL = False
 directory = "captures/"
 file_paths = glob(os.path.join(directory, "*.json"))
-
-
+INTERNAL_CIDR = os.getenv('INTERNAL_CIDR')
+AEGIS_ADDR = os.getenv('AEGIS_ADDR')
 """
 Classify IPs
 By: Internal vs External
 0: External, 1: Internal, 2: Error
 """
-def classify_ip(ip, internal_network="192.168.0.0/16"):
+def classify_ip(ip, internal_network=INTERNAL_CIDR):
     try:
         return int(ip_address(ip) in ip_network(internal_network))
     except ValueError:
@@ -177,7 +180,20 @@ def process_flow():
     # Predict anomaly
     flow_df['anomaly'] = model.predict(X_scaled)
     
-    # TODO: Implement action to notify regenerative network or enforcer (on anomaly)
+    anomalies = flow_df[flow_df['anomaly'] == -1]
+    if not anomalies.empty:
+        # Prepare anomaly data for sending to the external web server
+        anomaly_payload = anomalies.to_dict(orient='records')
+
+        try:
+            response = requests.post(f"http://{AEGIS_ADDR}/anomaly", json=anomaly_payload)
+            if response.status_code == 200:
+                print(f"Successfully sent {len(anomalies)} anomalies to the web server.")
+            else:
+                print(f"Failed to send anomalies. HTTP {response.status_code}: {response.text}")
+        except Exception as e:
+            print(f"Error sending anomalies to the web server: {e}")
+
 
     # Return the prediction result
     result = flow_df[['anomaly']].iloc[0].to_dict()  # Return only the anomaly status of the first row
@@ -201,5 +217,5 @@ if __name__ == '__main__': # Main Function
    
     
     # Start Webserver to analyze future Packet Flows
-    app.run(debug=True)
+    app.run(debug=True, port=5300)
     
