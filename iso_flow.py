@@ -1,4 +1,5 @@
-import pandas as pd
+import datetime #TODO: Reorganize and reduce imports
+import pandas as pd 
 from flask import Flask, request, jsonify
 import numpy as np
 import requests
@@ -7,10 +8,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from ipaddress import ip_address, ip_network
 import os
+import json
 from glob import glob
 import joblib
 import shap
 from dotenv import load_dotenv
+from filelock import FileLock
 
 load_dotenv()
 
@@ -27,6 +30,24 @@ directory = "captures/"
 file_paths = glob(os.path.join(directory, "*.json"))
 INTERNAL_CIDR = os.getenv('INTERNAL_CIDR')
 AEGIS_ADDR = os.getenv('AEGIS_ADDR')
+
+
+"""
+Save Raw Data
+Takes JSON data sent to endpoint and appends to todays file,
+using a lockfile to ensure threads wait their turn
+"""
+def save_raw_data(data):
+    # Get the current date to name the file
+    current_date = datetime.datetime.now().strftime('%Y-%m-%d')
+    file_name = f"flows-{current_date}.json"
+    lock_file = f"{file_name}.lock"  # Lock file for synchronization
+
+    with FileLock(lock_file): # Ensure only one thread writes at a time
+        with open(file_name, 'a') as f:
+            f.write(json.dumps(data) + '\n')  # Add newline after each JSON object
+
+
 """
 Classify IPs
 By: Internal vs External
@@ -47,7 +68,13 @@ def categorize_port(port):
         return 'ephemeral'
     else:
         return 'unknown'
-    
+
+"""
+Preprocess Data
+Classifies IPs as Internal, External, or Error (IPv6 not supported)
+Drops columns of only internal to internal data (Watching for traffic coming in and out)
+One Hot Encodes Port categories, and protocols
+"""
 def preprocess_data(data):
     # Classify IPs as internal or external
     data['src_internal'] = data['ipv4_src_addr'].apply(classify_ip)
@@ -153,6 +180,7 @@ def train_model():
 
 """
 App Webhook
+Ingest netflow data from logstash netflow collector
 """
 @app.route('/process_flow', methods=['POST'])
 def process_flow():
@@ -160,17 +188,21 @@ def process_flow():
     if 'netflow' not in flow:
             return jsonify({"error": "'netflow' key is missing in the payload"}), 400
 
+    # Flatten the netflow data
     flow_df = pd.json_normalize(flow['netflow'])
-
+    if DEBUG_MODEL:
+        print(f"Ingested:\n{flow_df}")
+    
     # Ensure the required columns exist in the incoming data
     required_columns = ['protocol', 'l4_src_port', 'l4_dst_port', 'in_bytes', 'in_pkts', 'ipv4_src_addr', 'ipv4_dst_addr']
     missing_columns = [col for col in required_columns if col not in flow_df.columns]
     if missing_columns:
         return jsonify({"error": f"Missing required columns: {missing_columns}"}), 400
 
-    # Classify IPs
+    save_raw_data(flow)
+    
+    # Preprocess Data
     mdata = preprocess_data(flow_df)
-
     mdata = mdata.reindex(columns=protocol_columns, fill_value=0)
     X = mdata
 
