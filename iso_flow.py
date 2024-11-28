@@ -203,9 +203,12 @@ def process_flow():
     
     # Preprocess Data
     mdata = preprocess_data(flow_df)
+    if mdata.empty:
+        # Was internal traffic
+        return jsonify({"Report": f"Internal Traffic"}), 200
     mdata = mdata.reindex(columns=protocol_columns, fill_value=0)
     X = mdata
-
+    print(f"{X}")
     # Standardize the features
     X_scaled = scaler.transform(X) # Scaler is same scaler as used in the model
 
