@@ -100,6 +100,7 @@ Reads all json files in datadir, trains isolation forest model and sets scaler
 Changes values of model & scaler globals
 """
 def train_model():
+    global protocol_columns
     original_data = pd.DataFrame()
     
     # Process Data
@@ -205,10 +206,10 @@ def process_flow():
     mdata = preprocess_data(flow_df)
     if mdata.empty:
         # Was internal traffic
+        print("Internal Traffic")
         return jsonify({"Report": f"Internal Traffic"}), 200
     mdata = mdata.reindex(columns=protocol_columns, fill_value=0)
     X = mdata
-    print(f"{X}")
     # Standardize the features
     X_scaled = scaler.transform(X) # Scaler is same scaler as used in the model
 
@@ -219,7 +220,7 @@ def process_flow():
     if not anomalies.empty:
         # Prepare anomaly data for sending to the external web server
         anomaly_payload = anomalies.to_dict(orient='records')
-
+        print(f"Anomaly: {anomaly_payload}")
         try:
             response = requests.post(f"http://{AEGIS_ADDR}/anomaly", json=anomaly_payload)
             if response.status_code == 200:
@@ -232,6 +233,7 @@ def process_flow():
 
     # Return the prediction result
     result = flow_df[['anomaly']].iloc[0].to_dict()  # Return only the anomaly status of the first row
+    print(f"EXTERNAL {flow_df[['protocol','ipv4_src_addr','in_bytes','anomaly']]}")
     return jsonify(result)
 
 """
@@ -243,7 +245,7 @@ if __name__ == '__main__': # Main Function
     # If pkl file exists, load model & scaler
     normal_conditions = os.path.isfile("model/isolation_forest_model.pkl") and os.path.isfile("model/scaler.pkl")
     no_train = normal_conditions and not DEBUG_MODEL
-    if no_train:
+    if no_train and False: # Until I fix not saving training columns
         print("Loading model from pretrained.")
         model = joblib.load("model/isolation_forest_model.pkl")
         scaler = joblib.load("model/scaler.pkl")
