@@ -31,6 +31,7 @@ file_paths = glob(os.path.join(directory, "*.json"))
 INTERNAL_CIDR = os.getenv('INTERNAL_CIDR')
 AEGIS_ADDR = os.getenv('AEGIS_ADDR')
 
+lock = threading.Lock()
 
 """
 Save Raw Data
@@ -42,7 +43,6 @@ def save_raw_data(data):
     current_date = datetime.datetime.now().strftime('%Y-%m-%d')
     file_name = f"flows-{current_date}.json"
     #lock_file = f"{file_name}.lock"  # Lock file for synchronization
-    lock = threading.Lock()
     with lock: # Ensure only one thread writes at a time
         with open(file_name, 'a') as f:
             f.write(json.dumps(data) + '\n')  # Add newline after each JSON object
