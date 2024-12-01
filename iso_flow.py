@@ -17,8 +17,8 @@ import threading
 
 load_dotenv()
 
-CONTAMINATION = 0.5 / 100 # To be set as PERCENT_HOSTILE env variable in future
-
+PERCENT_HOSTILE = os.getenv('PERCENT_HOSTILE') or 0.5
+CONTAMINATION = float(PERCENT_HOSTILE) / 100 
 # Flask Webserver
 app = Flask(__name__)
 model = IsolationForest(n_estimators=150 , contamination=CONTAMINATION, random_state=3)
@@ -41,8 +41,8 @@ using a lockfile to ensure threads wait their turn
 def save_raw_data(data):
     # Get the current date to name the file
     current_date = datetime.datetime.now().strftime('%Y-%m-%d')
-    file_name = f"flows-{current_date}.json"
-    #lock_file = f"{file_name}.lock"  # Lock file for synchronization
+    file_name = f"{directory}/flows-{current_date}.json"
+    
     with lock: # Ensure only one thread writes at a time
         with open(file_name, 'a') as f:
             f.write(json.dumps(data) + '\n')  # Add newline after each JSON object
@@ -245,10 +245,10 @@ if __name__ == '__main__': # Main Function
     # If pkl file exists, load model & scaler
     normal_conditions = os.path.isfile("model/isolation_forest_model.pkl") and os.path.isfile("model/scaler.pkl")
     no_train = normal_conditions and not DEBUG_MODEL
-    if no_train and False: # Until I fix not saving training columns
+    if no_train: # Until I fix not saving training columns
         print("Loading model from pretrained.")
         model = joblib.load("model/isolation_forest_model.pkl")
-        scaler = joblib.load("model/scaler.pkl")
+        scaler = joblib.load("model/scaler.pkl") # TODO: Save columns for future model creation
     else: # else train model
         train_model()
    
