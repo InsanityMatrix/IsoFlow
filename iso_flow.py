@@ -13,7 +13,7 @@ from glob import glob
 import joblib
 import shap
 from dotenv import load_dotenv
-from filelock import FileLock
+import threading
 
 load_dotenv()
 
@@ -41,9 +41,9 @@ def save_raw_data(data):
     # Get the current date to name the file
     current_date = datetime.datetime.now().strftime('%Y-%m-%d')
     file_name = f"flows-{current_date}.json"
-    lock_file = f"{file_name}.lock"  # Lock file for synchronization
-
-    with FileLock(lock_file): # Ensure only one thread writes at a time
+    #lock_file = f"{file_name}.lock"  # Lock file for synchronization
+    lock = threading.Lock()
+    with lock: # Ensure only one thread writes at a time
         with open(file_name, 'a') as f:
             f.write(json.dumps(data) + '\n')  # Add newline after each JSON object
 
