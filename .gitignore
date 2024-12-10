@@ -1,3 +1,4 @@
 captures/*
+data/*
 .env
 flows-*

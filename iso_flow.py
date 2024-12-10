@@ -23,9 +23,12 @@ CONTAMINATION = float(PERCENT_HOSTILE) / 100
 app = Flask(__name__)
 model = IsolationForest(n_estimators=150 , contamination=CONTAMINATION, random_state=3)
 scaler = StandardScaler()
+models = {}
+scalers = {}
 protocol_columns = None
 # Data Directory to load from
 DEBUG_MODEL = False
+DATA_DIR = "data/"
 directory = "captures/"
 file_paths = glob(os.path.join(directory, "*.json"))
 INTERNAL_CIDR = os.getenv('INTERNAL_CIDR')
@@ -94,6 +97,26 @@ def preprocess_data(data):
     return model_data
 
 """
+Preprocess Data
+Classifies IPs as Internal, External, or Error (IPv6 not supported)
+Drops columns of only internal to internal data (Watching for traffic coming in and out)
+One Hot Encodes Port categories, and protocols
+"""
+def preprocess_data_nodrop(data):
+    # Classify IPs as internal or external
+    data['src_internal'] = data['ipv4_src_addr'].apply(classify_ip)
+    data['dst_internal'] = data['ipv4_dst_addr'].apply(classify_ip)
+    # Drop Data where 1 ip isn't external
+    data = data.drop(data[(data['src_internal'] == 1) & (data['dst_internal'] == 1)].index)
+
+    data['src_port_category'] = data['l4_src_port'].apply(categorize_port)
+    data['dst_port_category'] = data['l4_dst_port'].apply(categorize_port)
+
+    
+    features = ['protocol', 'src_port_category', 'dst_port_category', 'in_bytes', 'in_pkts', 'src_internal', 'dst_internal']
+    return data, features
+
+"""
 Function: train_model
 Reads all json files in datadir, trains isolation forest model and sets scaler
 
@@ -132,52 +155,77 @@ def train_model():
         print("No data left after filtering for required columns. Please check your input file.")
         exit()
     
-    data = preprocess_data(original_data)
-    protocol_columns = data.columns # Keep track for ingestion later
-    # Prepare Features for Model 
+    fdata, features = preprocess_data_nodrop(original_data) # Just to make sure we train with all of the columns
+    protocol_columns = preprocess_data(original_data).columns # Keep track for ingestion later #TODO: make this more efficient
     
+    # Make a model per IP (What's an anomaly for one machine may be normal for another) TODO: Bears the consequence of new DHCP ips failing to be evaluated
+    src_vals = [x for x in fdata['ipv4_src_addr'].unique() if classify_ip(x) == 1]
+    dst_vals = [x for x in fdata['ipv4_dst_addr'].unique() if classify_ip(x) == 1]
+
+    ips = set(src_vals)
+    for ip in dst_vals:
+        ips.add(ip)
     
-    for column in data.columns:
-        non_numeric = data[pd.to_numeric(data[column], errors='coerce').isna()]
-        if not non_numeric.empty:
-            print(f"Non-numeric values found in column '{column}':")
-            print(non_numeric)
+    explanations = []
+    for ip in ips: # TODO: Multithread
+        data = fdata.loc[
+            (fdata['ipv4_src_addr'] == ip) | (fdata['ipv4_dst_addr'] == ip)
+        ]
+        data = data[features]
+        data = pd.get_dummies(data, columns=['protocol', 'src_port_category', 'dst_port_category'])
+        data = data.reindex(columns=protocol_columns, fill_value=0)
+        # Prepare Features for Model 
+        for column in data.columns:
+            non_numeric = data[pd.to_numeric(data[column], errors='coerce').isna()]
+            if not non_numeric.empty:
+                print(f"Non-numeric values found in column '{column}':")
+                print(non_numeric)
 
-    # Standardize the features
-    features = data.columns.tolist()
+        X_train, X_test = train_test_split(data, test_size=0.2, random_state=42)
+        
+        scalers[ip] = StandardScaler()
+        # Standardize the features
+        X_train_scaled = scalers[ip].fit_transform(X_train)
+        X_test_scaled = scalers[ip].transform(X_test)
 
-    X_train, X_test = train_test_split(data, test_size=0.2, random_state=42)
+        models[ip] = IsolationForest(n_estimators=150 , contamination=CONTAMINATION, random_state=3)
+        models[ip].fit(X_train_scaled)
+        #Save model
+        joblib.dump(models[ip], f"model/model.{ip}.pkl")
+        joblib.dump(scalers[ip], f"model/scaler.{ip}.pkl")
+        print(f"Saved model {ip} to models directory")
     
-    # Standardize the features
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
 
-    # Train 
-    model.fit(X_train_scaled)
-
-    # Save Model
-    joblib.dump(model, "model/isolation_forest_model.pkl")
-    joblib.dump(scaler, "model/scaler.pkl")
-    print("Saved models to models directory")
-
-    test_anomalies = model.predict(X_test_scaled)
-    X_test['anomaly'] = test_anomalies
-    anomaly_indices = X_test[X_test['anomaly'] == -1].index
-    anomalies_data = original_data.loc[anomaly_indices]
-    # Save the results with anomalies
-    output_file = "isoflow_anomalies.json"
-    anomalies_data.to_json(output_file, orient='records', lines=True)
-    print(f"Processed anomalies saved to {output_file}")
+        test_anomalies = models[ip].predict(X_test_scaled)
+        X_test['anomaly'] = test_anomalies
+        anomaly_indices = X_test[X_test['anomaly'] == -1].index
+        anomalies_data = original_data.loc[anomaly_indices]
+        # Save the results with anomalies
+        output_file = f"${DATA_DIR}{ip}_anomalies.json"
+        anomalies_data.to_json(output_file, orient='records', lines=True)
+        print(f"Processed anomalies saved to {output_file}")
    
-    print(f"Anomalies: {len(anomalies_data)} out of {len(X_test)}")
-    if DEBUG_MODEL:
-        print("Analyzing Model")
-        # Create a SHAP explainer
-        explainer = shap.KernelExplainer(model.decision_function, X_train_scaled[:100])  # Use a subset for faster computation
-        shap_values = explainer.shap_values(X_train_scaled[:2000])
+        print(f"Anomalies for {ip}: {len(anomalies_data)} out of {len(X_test)}")
+        if len(anomalies_data) == 0:
+            continue
+        nfeatures = data.columns.tolist()
+        if DEBUG_MODEL and len(anomalies_data) >= 2:
+            print("Analyzing Model")
+            # Create a SHAP explainer
+            exp = len(X_train_scaled) if len(X_train_scaled) < 100 else 100
+            val =  len(X_train_scaled) if len(X_train_scaled) < 2000 else 2000
 
-        # Summary plot for feature importance
-        shap.summary_plot(shap_values, X_train[:2000], feature_names=features)
+            explainer = shap.KernelExplainer(models[ip].decision_function, X_train_scaled[:exp])  # Use a subset for faster computation
+            shap_values = explainer.shap_values(X_train_scaled[:val])
+            
+            # Summary plot for feature importance
+            explanations.append((shap_values, X_train[:val], nfeatures))
+            #shap.summary_plot(shap_values, X_train[:val], feature_names=nfeatures)
+    
+    for explanation in explanations:
+        shap_values, xval, nfeatures = explanation # unpack tuple
+        shap.summary_plot(shap_values, xval, feature_names=nfeatures)
+        
 
 """
 App Webhook
@@ -208,13 +256,15 @@ def process_flow():
         # Was internal traffic
         print("Internal Traffic")
         return jsonify({"Report": f"Internal Traffic"}), 200
+    
+    intip = flow['netflow']['ipv4_src_addr'] if classify_ip(flow['netflow']['ipv4_src_addr']) == 1 else flow['netflow']['ipv4_dst_addr'] # Retrieve internal IP to run model on
     mdata = mdata.reindex(columns=protocol_columns, fill_value=0)
     X = mdata
     # Standardize the features
-    X_scaled = scaler.transform(X) # Scaler is same scaler as used in the model
+    X_scaled = scalers[intip].transform(X) # Scaler is same scaler as used in the model
 
     # Predict anomaly
-    flow_df['anomaly'] = model.predict(X_scaled)
+    flow_df['anomaly'] = models[intip].predict(X_scaled)
     
     anomalies = flow_df[flow_df['anomaly'] == -1]
     if not anomalies.empty:
@@ -247,12 +297,18 @@ if __name__ == '__main__': # Main Function
     no_train = normal_conditions and not DEBUG_MODEL
     if no_train: # Until I fix not saving training columns
         print("Loading model from pretrained.")
-        model = joblib.load("model/isolation_forest_model.pkl")
-        scaler = joblib.load("model/scaler.pkl") # TODO: Save columns for future model creation
+
+        model_files = glob(os.path.join("model", "*.pkl"))
+        for mod in model_files:
+            if mod.startswith("model."):
+                pos = mod.index("model.") + len("model.")
+                ip = mod[pos:].replace(".pkl", "")
+                model[ip] = joblib.load(f"model/model.{ip}.pkl")
+                scaler[ip] = joblib.load(f"model/scaler.{ip}.pkl")
+            #TODO: Load columns from file.
     else: # else train model
         train_model()
    
     
     # Start Webserver to analyze future Packet Flows
     app.run(debug=True, port=5300, host='0.0.0.0')
-    
