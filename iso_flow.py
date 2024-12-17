@@ -1,4 +1,5 @@
 import datetime #TODO: Reorganize and reduce imports
+from matplotlib import pyplot as plt
 import pandas as pd 
 from flask import Flask, request, jsonify
 import numpy as np
@@ -158,6 +159,7 @@ def train_model():
     fdata, features = preprocess_data_nodrop(original_data) # Just to make sure we train with all of the columns
     protocol_columns = preprocess_data(original_data).columns # Keep track for ingestion later #TODO: make this more efficient
     
+    joblib.dump(protocol_columns, 'model/columns.pkl')
     # Make a model per IP (What's an anomaly for one machine may be normal for another) TODO: Bears the consequence of new DHCP ips failing to be evaluated
     src_vals = [x for x in fdata['ipv4_src_addr'].unique() if classify_ip(x) == 1]
     dst_vals = [x for x in fdata['ipv4_dst_addr'].unique() if classify_ip(x) == 1]
@@ -201,7 +203,7 @@ def train_model():
         anomaly_indices = X_test[X_test['anomaly'] == -1].index
         anomalies_data = original_data.loc[anomaly_indices]
         # Save the results with anomalies
-        output_file = f"${DATA_DIR}{ip}_anomalies.json"
+        output_file = f"{DATA_DIR}{ip}_anomalies.json"
         anomalies_data.to_json(output_file, orient='records', lines=True)
         print(f"Processed anomalies saved to {output_file}")
    
@@ -219,12 +221,14 @@ def train_model():
             shap_values = explainer.shap_values(X_train_scaled[:val])
             
             # Summary plot for feature importance
-            explanations.append((shap_values, X_train[:val], nfeatures))
+            explanations.append((shap_values, X_train[:val], nfeatures, ip))
             #shap.summary_plot(shap_values, X_train[:val], feature_names=nfeatures)
     
     for explanation in explanations:
-        shap_values, xval, nfeatures = explanation # unpack tuple
-        shap.summary_plot(shap_values, xval, feature_names=nfeatures)
+        shap_values, xval, nfeatures, ip = explanation # unpack tuple
+        shap.summary_plot(shap_values, xval, feature_names=nfeatures, show=False)
+        plt.title(f"{ip} Anomaly Decision Function")
+        plt.show()
         
 
 """
@@ -293,11 +297,12 @@ def process_flow():
     """
 if __name__ == '__main__': # Main Function
     # If pkl file exists, load model & scaler
-    normal_conditions = os.path.isfile("model/isolation_forest_model.pkl") and os.path.isfile("model/scaler.pkl")
+    normal_conditions = os.path.isfile("model/columns.pkl")
     no_train = normal_conditions and not DEBUG_MODEL
     if no_train: # Until I fix not saving training columns
         print("Loading model from pretrained.")
-
+        
+        protocol_columns = joblib.load('model/columns.pkl')
         model_files = glob(os.path.join("model", "*.pkl"))
         for mod in model_files:
             if mod.startswith("model."):
@@ -305,7 +310,6 @@ if __name__ == '__main__': # Main Function
                 ip = mod[pos:].replace(".pkl", "")
                 model[ip] = joblib.load(f"model/model.{ip}.pkl")
                 scaler[ip] = joblib.load(f"model/scaler.{ip}.pkl")
-            #TODO: Load columns from file.
     else: # else train model
         train_model()
    

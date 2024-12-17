@@ -2,3 +2,4 @@ captures/*
 data/*
 .env
 flows-*
+model/*
