@@ -305,11 +305,11 @@ if __name__ == '__main__': # Main Function
         protocol_columns = joblib.load('model/columns.pkl')
         model_files = glob(os.path.join("model", "*.pkl"))
         for mod in model_files:
-            if mod.startswith("model."):
-                pos = mod.index("model.") + len("model.")
+            if mod.startswith("model/model."):
+                pos = mod.index("model/model.") + len("model/model.")
                 ip = mod[pos:].replace(".pkl", "")
-                model[ip] = joblib.load(f"model/model.{ip}.pkl")
-                scaler[ip] = joblib.load(f"model/scaler.{ip}.pkl")
+                models[ip] = joblib.load(f"model/model.{ip}.pkl")
+                scalers[ip] = joblib.load(f"model/scaler.{ip}.pkl")
     else: # else train model
         train_model()
    
