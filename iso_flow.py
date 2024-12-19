@@ -265,31 +265,33 @@ def process_flow():
     mdata = mdata.reindex(columns=protocol_columns, fill_value=0)
     X = mdata
     # Standardize the features
-    X_scaled = scalers[intip].transform(X) # Scaler is same scaler as used in the model
+    try:
+        X_scaled = scalers[intip].transform(X) # Scaler is same scaler as used in the model
 
-    # Predict anomaly
-    flow_df['anomaly'] = models[intip].predict(X_scaled)
-    
-    anomalies = flow_df[flow_df['anomaly'] == -1]
-    if not anomalies.empty:
-        # Prepare anomaly data for sending to the external web server
-        anomaly_payload = anomalies.to_dict(orient='records')
-        print(f"Anomaly: {anomaly_payload}")
-        try:
-            response = requests.post(f"http://{AEGIS_ADDR}/anomaly", json=anomaly_payload)
-            if response.status_code == 200:
-                print(f"Successfully sent {len(anomalies)} anomalies to the web server.")
-            else:
-                print(f"Failed to send anomalies. HTTP {response.status_code}: {response.text}")
-        except Exception as e:
-            print(f"Error sending anomalies to the web server: {e}")
+        # Predict anomaly
+        flow_df['anomaly'] = models[intip].predict(X_scaled)
+        
+        anomalies = flow_df[flow_df['anomaly'] == -1]
+        if not anomalies.empty:
+            # Prepare anomaly data for sending to the external web server
+            anomaly_payload = anomalies.to_dict(orient='records')
+            print(f"Anomaly: {anomaly_payload}")
+            try:
+                response = requests.post(f"http://{AEGIS_ADDR}/anomaly", json=anomaly_payload)
+                if response.status_code == 200:
+                    print(f"Successfully sent {len(anomalies)} anomalies to the web server.")
+                else:
+                    print(f"Failed to send anomalies. HTTP {response.status_code}: {response.text}")
+            except Exception as e:
+                print(f"Error sending anomalies to the web server: {e}")
 
 
-    # Return the prediction result
-    result = flow_df[['anomaly']].iloc[0].to_dict()  # Return only the anomaly status of the first row
-    print(f"EXTERNAL {flow_df[['protocol','ipv4_src_addr','in_bytes','anomaly']]}")
-    return jsonify(result)
-
+        # Return the prediction result
+        result = flow_df[['anomaly']].iloc[0].to_dict()  # Return only the anomaly status of the first row
+        print(f"EXTERNAL {flow_df[['protocol','ipv4_src_addr','in_bytes','anomaly']]}")
+        return jsonify(result), 200
+    except KeyError as ke:
+        return jsonify({"error": "Encountered a KeyError, internal ip is currently not recognized."}), 400
 """
     Model Initialization & Webserver
     Webserver - injests logs and adds to data dir, retrain nightly with sliding window to adopt
